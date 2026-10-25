@@ -1,15 +1,10 @@
-#!/usr/bin/env python3
-"""Train the PhishCheck classifier on the UCI SMS Spam Collection.
+"""Train PhishCheck on the UCI SMS Spam Collection.
 
-Run from the repo root:
-
-    python train.py
-
-The file labels messages ham or spam. This script calls spam "phish" and ham
-"legit", which is the wording PhishCheck will show. The texts are old SMS
-spam, not modern email phishing.
+Run from the repo root: python train.py
 """
 
+import csv
+import json
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -18,238 +13,155 @@ import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import confusion_matrix, precision_score, recall_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import (confusion_matrix, f1_score, precision_recall_curve,
+                             precision_score, recall_score)
+from sklearn.model_selection import (StratifiedKFold, cross_val_predict, cross_validate,
+                                     train_test_split)
+from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 
-from top_words import top_phish_words
-
-# Paths sit next to this script, so the run does not depend on the shell's cwd.
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-DATA_FILE = DATA_DIR / "SMSSpamCollection"
-MODEL_PATH = ROOT / "models" / "phishcheck_pipeline.joblib"
-
-# Current UCI download, then the older mirror. The zip holds SMSSpamCollection.
-UCI_ZIP_URLS = [
-    "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip",
-    "https://archive.ics.uci.edu/ml/machine-learning-databases/00228/smsspamcollection.zip",
-]
-
-# 20% of unique texts are held out. random_state keeps the split fixed.
-TEST_SIZE = 0.2
-RANDOM_STATE = 42
+DATA_URL = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
+DATA_FILE = Path("data/SMSSpamCollection")
+MODEL_PATH = Path("models/phishcheck_pipeline.joblib")
+THRESHOLD_PATH = Path("models/threshold.json")
 
 
-def ensure_dataset() -> Path:
-    """Download the UCI zip once, and reuse data/SMSSpamCollection after that."""
+def download_data():
     if DATA_FILE.exists():
-        print(f"Using existing file: {DATA_FILE.relative_to(ROOT)}")
-        return DATA_FILE
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = DATA_DIR / "smsspamcollection.zip"
-    downloaded = False
-    errors = []
-
-    for url in UCI_ZIP_URLS:
-        print(f"Downloading {url}")
-        request = urllib.request.Request(url, headers={"User-Agent": "phishcheck-train/1.0"})
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                zip_path.write_bytes(response.read())
-            downloaded = True
-            break
-        except Exception as exc:  # this mirror failed; try the next URL
-            errors.append(f"{url} ({exc})")
-
-    if not downloaded:
-        details = "\n".join(errors)
-        raise SystemExit(f"Could not download the UCI SMS Spam Collection:\n{details}")
-
-    with zipfile.ZipFile(zip_path) as archive:
-        members = [name for name in archive.namelist() if Path(name).name == "SMSSpamCollection"]
-        if len(members) != 1:
-            raise SystemExit(f"Expected one SMSSpamCollection file in the zip, found {members}")
-        DATA_FILE.write_bytes(archive.read(members[0]))
-
+        return
+    DATA_FILE.parent.mkdir(exist_ok=True)
+    zip_path = DATA_FILE.parent / "sms.zip"
+    print("Downloading", DATA_URL)
+    urllib.request.urlretrieve(DATA_URL, zip_path)
+    with zipfile.ZipFile(zip_path) as z:
+        z.extract("SMSSpamCollection", DATA_FILE.parent)
     zip_path.unlink()
-    print(f"Wrote {DATA_FILE.relative_to(ROOT)}")
-    return DATA_FILE
 
 
-def load_messages(path: Path) -> pd.DataFrame:
-    """Read 'label<tab>text' lines. Map spam -> phish and ham -> legit."""
-    try:
-        content = path.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        # Older copies of this collection are latin-1.
-        content = path.read_text(encoding="latin-1")
-
-    rows = []
-    for line_number, line in enumerate(content.splitlines(), start=1):
-        if not line.strip():
-            continue
-        if "\t" not in line:
-            raise SystemExit(f"Line {line_number} has no tab separator.")
-
-        # Split once: the message itself may contain tabs.
-        label, text = line.split("\t", 1)
-        # "win now" and "win now " are the same text. Strip before deduping.
-        text = text.strip()
-        if label == "spam":
-            mapped = "phish"
-        elif label == "ham":
-            mapped = "legit"
-        else:
-            raise SystemExit(f"Line {line_number}: expected ham or spam, got {label!r}")
-
-        if text:
-            rows.append((mapped, text))
-
-    return pd.DataFrame(rows, columns=["label", "text"])
-
-
-def drop_duplicate_texts(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep one row per text so a repeated SMS cannot land in both splits.
-
-    The collection repeats messages. Texts that carry both labels are dropped.
-    """
-    loaded = len(df)
-
-    labels_per_text = df.groupby("text")["label"].nunique()
-    conflict_texts = labels_per_text[labels_per_text > 1].index
-    df = df[~df["text"].isin(conflict_texts)].copy()
-    after_conflicts = len(df)
-
-    df = df.drop_duplicates(subset="text").reset_index(drop=True)
-    duplicates_removed = after_conflicts - len(df)
-
-    counts = df["label"].value_counts()
-    print(f"Loaded messages:           {loaded}")
-    print(f"Texts with both labels:    {len(conflict_texts)} (dropped)")
-    print(f"Extra copies removed:      {duplicates_removed}")
-    print(
-        f"Unique texts:              {len(df)} "
-        f"({int(counts.get('legit', 0))} legit, {int(counts.get('phish', 0))} phish)"
+def load_data():
+    # Each line is "label<TAB>text". QUOTE_NONE because some texts contain quote marks.
+    df = pd.read_csv(
+        DATA_FILE,
+        sep="\t",
+        header=None,
+        names=["label", "text"],
+        quoting=csv.QUOTE_NONE,
+        encoding="utf-8",
     )
+    df["text"] = df["text"].str.strip()
+    df["label"] = df["label"].map({"spam": "phish", "ham": "legit"})
+    print("Loaded messages:", len(df))
+
+    # The file repeats some messages. Keep one copy so the same text
+    # can't end up in both train and test.
+    df = df.drop_duplicates(subset="text")
+    counts = df["label"].value_counts()
+    print(f"Unique texts: {len(df)} ({counts['legit']} legit, {counts['phish']} phish)")
     return df
 
 
-def print_phish_metrics(title: str, y_true, y_pred) -> None:
-    """Precision and recall for the phish class, then the confusion matrix.
-
-    Precision: of the messages we called phish, how many really were.
-    Recall: of the real phish messages, how many we caught.
-    Matrix rows are actual labels, columns are predicted labels.
-    Order is legit, then phish.
-    """
+def print_metrics(title, y_true, y_pred):
     precision = precision_score(y_true, y_pred, pos_label="phish", zero_division=0)
     recall = recall_score(y_true, y_pred, pos_label="phish", zero_division=0)
-    matrix = confusion_matrix(y_true, y_pred, labels=["legit", "phish"])
-    legit_as_legit, legit_as_phish = (int(matrix[0, 0]), int(matrix[0, 1]))
-    phish_as_legit, phish_as_phish = (int(matrix[1, 0]), int(matrix[1, 1]))
-
     print()
     print(title)
-    print(f"  phish precision: {precision:.3f}")
-    print(f"  phish recall:    {recall:.3f}")
-    print("  confusion matrix (row = actual, column = predicted)")
-    print(f"  {'':16} {'pred legit':>12} {'pred phish':>12}")
-    print(f"  {'actual legit':16} {legit_as_legit:12d} {legit_as_phish:12d}")
-    print(f"  {'actual phish':16} {phish_as_legit:12d} {phish_as_phish:12d}")
+    print(f"phish precision: {precision:.3f}")
+    print(f"phish recall:    {recall:.3f}")
+    print(f"phish F1:        {f1_score(y_true, y_pred, pos_label='phish', zero_division=0):.3f}")
+    print("confusion matrix (rows = actual, columns = predicted, order legit, phish):")
+    print(confusion_matrix(y_true, y_pred, labels=["legit", "phish"]))
 
 
-def main() -> None:
-    print("PhishCheck training")
-    print("Data: UCI SMS Spam Collection. Spam is labeled phish; ham is labeled legit.")
-    print("These are SMS spam messages, not modern email phishing.")
-    print()
+def main():
+    download_data()
+    df = load_data()
 
-    df = drop_duplicate_texts(load_messages(ensure_dataset()))
-    if df["label"].nunique() < 2:
-        raise SystemExit(f"Need both labels to stratify, found {sorted(df['label'].unique())}")
-
-    # Stratified: each side keeps a similar phish/legit mix.
-    # Texts are already unique, so nothing is copied across the split.
+    # stratify keeps the same phish/legit mix in train and test.
     X_train, X_test, y_train, y_test = train_test_split(
-        df["text"],
-        df["label"],
-        test_size=TEST_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=df["label"],
+        df["text"], df["label"], test_size=0.2, random_state=42, stratify=df["label"]
     )
+    print(f"Train: {len(y_train)} ({(y_train == 'phish').sum()} phish)")
+    print(f"Test:  {len(y_test)} ({(y_test == 'phish').sum()} phish)")
 
-    overlap = set(X_train) & set(X_test)
-    print(f"Train rows:                {len(y_train)} ({int((y_train == 'phish').sum())} phish)")
-    print(f"Test rows:                 {len(y_test)} ({int((y_test == 'phish').sum())} phish)")
-    print(f"Train/test texts in common: {len(overlap)}")
-    if overlap:
-        raise SystemExit("The same text is in train and test. Refusing to train on a leaky split.")
-
-    # Baseline uses the training majority only, then is scored on the same test rows.
+    # Baseline: always guess the most common label in the training set.
     majority = y_train.value_counts().idxmax()
-    baseline_pred = [majority] * len(y_test)
-    print(f"Majority class in training: {majority}")
-    print_phish_metrics("Baseline: always predict the majority class", y_test, baseline_pred)
+    print_metrics(f"Baseline (always '{majority}')", y_test, [majority] * len(y_test))
 
-    # TfidfVectorizer: bag of word weights. Rare words count more than common ones.
-    # Default tokenizer keeps lowercase words of 2+ characters.
-    # class_weight="balanced": phish is rare, so errors on it count more in training.
-    pipeline = Pipeline(
-        steps=[
-            ("tfidf", TfidfVectorizer()),
-            (
-                "logreg",
-                LogisticRegression(
-                    class_weight="balanced",
-                    solver="lbfgs",
-                    max_iter=1000,
-                    random_state=RANDOM_STATE,
-                ),
-            ),
-        ]
-    )
-    pipeline.fit(X_train, y_train)
-    model_pred = pipeline.predict(X_test)
-    print_phish_metrics("Model: TF-IDF + balanced logistic regression", y_test, model_pred)
+    # class_weight="balanced" because phish is only about 12% of the data,
+    # so mistakes on phish need to count more during training.
+    model = Pipeline([
+        ("tfidf", TfidfVectorizer()),
+        ("logreg", LogisticRegression(class_weight="balanced", max_iter=1000)),
+    ])
+    # Naive Bayes with the same TF-IDF settings, to compare against.
+    nb_model = Pipeline([
+        ("tfidf", TfidfVectorizer()),
+        ("nb", MultinomialNB()),
+    ])
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(pipeline, MODEL_PATH)
+    # 5-fold cross-validation on the training set only. The test set stays unseen.
+    folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    y_train_phish = y_train == "phish"
     print()
-    print(f"Saved fitted pipeline to {MODEL_PATH.relative_to(ROOT)}")
+    print("5-fold cross-validation on the training set (mean +/- std):")
+    for name, pipe in [("Naive Bayes", nb_model), ("Logistic regression", model)]:
+        scores = cross_validate(pipe, X_train, y_train_phish, cv=folds,
+                                scoring=["precision", "recall", "f1"])
+        p, r, f = scores["test_precision"], scores["test_recall"], scores["test_f1"]
+        print(f"{name:20} precision {p.mean():.3f} +/- {p.std():.3f}  "
+              f"recall {r.mean():.3f} +/- {r.std():.3f}  f1 {f.mean():.3f} +/- {f.std():.3f}")
 
-    # One caught test message, so you can see the same word list the API returns.
-    classes = list(pipeline.classes_)
-    phish_index = classes.index("phish")
-    phish_scores = pipeline.predict_proba(X_test)[:, phish_index]
+    nb_model.fit(X_train, y_train)
+    print_metrics("TF-IDF + Naive Bayes", y_test, nb_model.predict(X_test))
 
-    best_i = None
-    best_score = -1.0
-    for i, (actual, predicted, score) in enumerate(zip(y_test, model_pred, phish_scores)):
-        if actual == "phish" and predicted == "phish" and score > best_score:
-            best_i = i
-            best_score = float(score)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    print_metrics("TF-IDF + logistic regression, threshold 0.5", y_test, y_pred)
 
-    if best_i is None:
-        print("\nNo test phish was caught, so there is no sample word list.")
-        return
+    print_errors(X_test, y_test, y_pred)
+    threshold = pick_threshold(model, X_train, y_train_phish, folds)
 
-    sample_text = X_test.iloc[best_i]
-    shown = sample_text if len(sample_text) <= 240 else sample_text[:240] + "..."
+    test_proba = model.predict_proba(X_test)[:, list(model.classes_).index("phish")]
+    tuned_pred = ["phish" if p >= threshold else "legit" for p in test_proba]
+    print_metrics(f"Test set, threshold {threshold:.3f}", y_test, tuned_pred)
+
+    MODEL_PATH.parent.mkdir(exist_ok=True)
+    joblib.dump(model, MODEL_PATH)
+    THRESHOLD_PATH.write_text(json.dumps({"threshold": round(threshold, 4)}))
     print()
-    print("Sample test message the model caught")
-    print("  actual:      phish")
-    print("  predicted:   phish")
-    print(f"  phish score: {best_score:.3f}")
-    print(f"  text:        {shown}")
-    print("  words that pushed toward phish (tf-idf x coefficient):")
-    pushes = top_phish_words(pipeline, sample_text)
-    if not pushes:
-        print("    (none)")
-        return
-    for item in pushes:
-        print(f"    {item['word']:<24} {item['contribution']:+.3f}")
+    print("Saved", MODEL_PATH, "and", THRESHOLD_PATH)
+
+
+def print_errors(X_test, y_test, y_pred):
+    # Which test messages does the model get wrong?
+    false_pos = X_test[(y_test == "legit") & (y_pred == "phish")]
+    false_neg = X_test[(y_test == "phish") & (y_pred == "legit")]
+    print()
+    print(f"False positives (legit marked phish): {len(false_pos)}")
+    for text in false_pos:
+        print("  ", text[:80])
+    print(f"False negatives (phish marked legit): {len(false_neg)}")
+    for text in false_neg:
+        print("  ", text[:80])
+
+
+def pick_threshold(model, X_train, y_train_phish, folds):
+    # Out-of-fold probabilities: each training message is scored by a model that
+    # did not see it, so the test set is never used to pick the cutoff.
+    oof = cross_val_predict(model, X_train, y_train_phish, cv=folds, method="predict_proba")[:, 1]
+    precision, recall, thresholds = precision_recall_curve(y_train_phish, oof)
+    # Rule: the threshold with the highest F1, since we care about precision and recall equally.
+    # precision/recall have one more entry than thresholds, so drop the last one.
+    f1 = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-12)
+    best = int(f1.argmax())
+    threshold = float(thresholds[best])
+    print()
+    print("Out-of-fold precision/recall on the training set near the best F1:")
+    print("threshold  precision  recall  f1")
+    for i in range(max(best - 3, 0), min(best + 4, len(thresholds))):
+        mark = "  <- chosen" if i == best else ""
+        print(f"{thresholds[i]:.3f}      {precision[i]:.3f}      {recall[i]:.3f}   {f1[i]:.3f}{mark}")
+    return threshold
 
 
 if __name__ == "__main__":

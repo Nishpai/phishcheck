@@ -1,303 +1,67 @@
-:root {
-  --paper: #efe8dc;
-  --ink: #1c1916;
-  --muted: #5e574c;
-  --card: #fbf7f0;
-  --line: #1c1916;
-  --phish: #6f1f18;
-  --legit: #1a4634;
-  --error: #8f1d14;
-}
-
-* {
-  box-sizing: border-box;
-}
-
 body {
   margin: 0;
-  min-height: 100vh;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: "Liberation Sans", "DejaVu Sans", "Segoe UI", sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
+  font-family: system-ui, sans-serif;
+  background: #f5f5f5;
+  color: #222;
 }
 
-button,
+main {
+  max-width: 600px;
+  margin: 40px auto;
+  padding: 0 16px;
+}
+
+.note {
+  color: #666;
+  font-size: 14px;
+}
+
+.samples button {
+  margin: 0 8px 8px 0;
+}
+
 textarea {
-  font: inherit;
-}
-
-.page {
-  max-width: 40rem;
-  margin: 0 auto;
-  padding: 2.5rem 1.25rem 3rem;
-}
-
-.eyebrow {
-  margin: 0 0 0.35rem;
-  font-size: 0.75rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-h1 {
-  margin: 0;
-  font-family: "Liberation Serif", Georgia, serif;
-  font-size: 3rem;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1;
-}
-
-.lede {
-  margin: 0.9rem 0 0;
-  max-width: 36rem;
-}
-
-.checker {
-  margin-top: 1.75rem;
-  padding: 1.1rem;
-  background: var(--card);
-  border: 1px solid var(--line);
-}
-
-.samples-label,
-.field-label {
   display: block;
-  margin: 0 0 0.45rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  font: inherit;
+  margin-bottom: 8px;
 }
 
-.sample-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  margin-bottom: 1rem;
-}
-
-.sample,
-.check {
+button {
+  padding: 6px 12px;
+  font: inherit;
   cursor: pointer;
 }
 
-.sample {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink);
-  padding: 0.35rem 0.75rem;
-}
-
-.sample.active,
-.sample:hover {
-  background: var(--ink);
-  color: var(--paper);
-}
-
-textarea {
-  width: 100%;
-  resize: vertical;
-  min-height: 8.5rem;
-  padding: 0.75rem 0.8rem;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--ink);
-  line-height: 1.45;
-}
-
-textarea:focus,
-.check:focus-visible,
-.sample:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
-}
-
-.check {
-  margin-top: 0.75rem;
-  width: 100%;
-  border: 0;
-  background: var(--ink);
-  color: var(--paper);
-  font-size: 1rem;
-  padding: 0.75rem 1rem;
-}
-
-.check:disabled {
-  cursor: wait;
-  opacity: 0.55;
+.error {
+  color: #b00020;
 }
 
 .result {
-  margin-top: 1rem;
-  min-height: 4rem;
+  margin-top: 20px;
+  padding: 12px 16px;
+  border-radius: 6px;
 }
 
-.hint,
-.loading {
-  margin: 0;
+.result.phish {
+  background: #fde2e2;
 }
 
-.hint {
-  color: var(--muted);
-}
-
-.loading {
-  color: var(--ink);
-}
-
-.error {
-  margin: 0;
-  padding: 0.75rem 0.85rem;
-  border: 1px solid var(--error);
-  background: #f8e8e4;
-  color: var(--error);
-  overflow-wrap: break-word;
-}
-
-.verdict {
-  padding: 1.1rem 1.15rem 1.2rem;
-  color: #f7f3eb;
-}
-
-.verdict.phish {
-  background: var(--phish);
-}
-
-.verdict.legit {
-  background: var(--legit);
-}
-
-.verdict-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 1rem;
-}
-
-.verdict-label {
-  margin: 0;
-  font-family: "Liberation Serif", Georgia, serif;
-  font-size: 3.4rem;
-  line-height: 0.9;
-  letter-spacing: -0.03em;
-}
-
-.score {
-  margin: 0;
-  text-align: right;
-}
-
-.score-value {
-  display: block;
-  font-variant-numeric: tabular-nums;
-  font-size: 1.6rem;
-  line-height: 1;
-}
-
-.score-caption {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.85;
-}
-
-.meter {
-  margin-top: 0.9rem;
-  height: 0.55rem;
-  background: rgba(247, 243, 235, 0.22);
-  border: 1px solid rgba(247, 243, 235, 0.45);
-}
-
-.meter span {
-  display: block;
-  height: 100%;
-  background: #f7f3eb;
-}
-
-.verdict h2 {
-  margin: 1.15rem 0 0.55rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.verdict .hint,
-.formula {
-  color: rgba(247, 243, 235, 0.88);
-}
-
-.formula {
-  margin: 0.75rem 0 0;
-  font-size: 0.88rem;
+.result.legit {
+  background: #e2f5e6;
 }
 
 .words {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
   list-style: none;
-  margin: 0;
   padding: 0;
 }
 
 .words li {
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  padding: 0.28rem 0.6rem;
-  border: 1px solid rgba(247, 243, 235, 0.45);
-  border-radius: 999px;
-  background: rgba(247, 243, 235, 0.1);
-  font-variant-numeric: tabular-nums;
-}
-
-.word {
-  overflow-wrap: anywhere;
-}
-
-.weight {
-  flex: none;
-  opacity: 0.9;
-}
-
-.footnote {
-  margin: 1.25rem 0 0;
-  color: var(--muted);
-  font-size: 0.92rem;
-}
-
-@media (max-width: 560px) {
-  .page {
-    padding-top: 1.5rem;
-  }
-
-  h1 {
-    font-size: 2.4rem;
-  }
-
-  .verdict-top {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .score {
-    text-align: left;
-  }
-
-  .verdict-label {
-    font-size: 2.8rem;
-  }
-
-  .sample-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
+  display: inline-block;
+  margin: 0 6px 6px 0;
+  padding: 2px 8px;
+  background: white;
+  border-radius: 10px;
 }

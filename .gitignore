@@ -1,24 +1,7 @@
 .venv/
 __pycache__/
-*.py[cod]
 .pytest_cache/
-.mypy_cache/
-
 node_modules/
-frontend/node_modules/
 frontend/dist/
-frontend/dist-ssr/
-
-# train.py downloads the dataset and writes the model
 data/
-models/*.joblib
-
-.env
-.env.*
-*.log
-
-.DS_Store
-.idea/
-.vscode/
-*.swp
-.cursor/
+models/

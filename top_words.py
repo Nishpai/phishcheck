@@ -1,47 +1,20 @@
-"""Words that pushed one message toward phish.
+def top_phish_words(model, text, n=6):
+    """Words that pushed this message toward phish.
 
-contribution = tf-idf of the word in this message
-               x that word's coefficient for the phish class.
+    contribution = tf-idf of the word in this message x the word's coefficient.
+    """
+    tfidf = model.named_steps["tfidf"]
+    logreg = model.named_steps["logreg"]
+    # classes_ sort as ["legit", "phish"], so coef_ already points toward phish.
+    weights = logreg.coef_[0]
+    words = tfidf.get_feature_names_out()
 
-train.py and api.py both call this, so the printed list and the API match.
-"""
+    row = tfidf.transform([text])
+    scores = []
+    for i, value in zip(row.indices, row.data):
+        contribution = value * weights[i]
+        if contribution > 0:
+            scores.append((words[i], contribution))
 
-# Enough words to see the reason, few enough to read in one glance.
-TOP_N = 6
-
-
-def top_phish_words(pipeline, text: str, limit: int = TOP_N) -> list[dict]:
-    """Strongest pushes toward phish. Skip blanks and contributions <= 0."""
-    vectorizer = pipeline.named_steps["tfidf"]
-    logreg = pipeline.named_steps["logreg"]
-
-    # coef_ has one weight per vocabulary word, and it belongs to classes_[1].
-    # Flip the sign when that class is legit, so positive always means phish.
-    weights = logreg.coef_.ravel()
-    if logreg.classes_[1] != "phish":
-        weights = -weights
-
-    row = vectorizer.transform([text])
-    names = vectorizer.get_feature_names_out()
-    scored = []
-    for word_id, tfidf_value in zip(row.indices, row.data):
-        word = str(names[word_id]).strip()
-        if word == "":
-            continue
-        contribution = float(tfidf_value) * float(weights[word_id])
-        if contribution <= 0:
-            continue
-        scored.append((word, contribution))
-
-    # Highest contribution first. Same contribution → alphabetical word.
-    scored.sort(key=lambda item: (-item[1], item[0]))
-
-    top = []
-    for word, contribution in scored:
-        shown = round(contribution, 3)
-        if shown <= 0:
-            continue
-        top.append({"word": word, "contribution": shown})
-        if len(top) == limit:
-            break
-    return top
+    scores.sort(key=lambda pair: pair[1], reverse=True)
+    return [{"word": str(w), "contribution": round(float(c), 3)} for w, c in scores[:n]]
